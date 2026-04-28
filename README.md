@@ -85,7 +85,7 @@ Business-result handling:
 
 **System Architecture Diagram**
 
-![System Architecture](./locust-load-tester/reports-after-5/diagram.png)
+![System Architecture](screenshots/diagram.png)
 
 **Data flow explanation**
 
@@ -214,15 +214,15 @@ Different load levels exposed different bottlenecks, so we iterated through mult
 | cca          | 256  | 512    | 1                          | 3                          |
 | warehouse    | 512  | 1024   | 1                          | 1                          |
 
-![Locust report (after-2)](./locust-load-tester/reports-after-2/screenshot.png)
+![Locust report (after-2)](screenshots/round-2-screenshot.png)
 
 **CPU utilization**
 
-![CPU utilization after Round 2](./locust-load-tester/reports-after-2/cpu.png)
+![CPU utilization after Round 2](screenshots/round-2-cpu.png)
 
 **Memory utilization**
 
-![Memory utilization after Round 2](./locust-load-tester/reports-after-2/memory.png)
+![Memory utilization after Round 2](screenshots/round-2-memory.png)
 
 **Bottlenecks**
 
@@ -240,15 +240,15 @@ downstream services mis-attributed in logs.
 | cca          | 512  | 1024   | 1                          | 3                          |
 | warehouse    | 2048 | 4096   | 1                          | 1                          |
 
-![Locust report (after-3)](./locust-load-tester/reports-after-3/screenshot.png)
+![Locust report (after-3)](screenshots/round-3-screenshot.png)
 
 **CPU utilization**
 
-![CPU utilization after Round 3](./locust-load-tester/reports-after-3/cpu.png)
+![CPU utilization after Round 3](screenshots/round-3-cpu.png)
 
 **Memory utilization**
 
-![Memory utilization after Round 3](./locust-load-tester/reports-after-3/memory.png)
+![Memory utilization after Round 3](screenshots/round-3-memory.png)
 
 **Bottlenecks**
 
@@ -279,7 +279,7 @@ to 256 / 512** so that, for similar checkout load, **utilization relative to pro
 higher**, which helps **Application Auto Scaling** add CCA tasks sooner and keeps **scale-out timing
 ** closer to the other services (still capped at **`max_capacity = 3`**).
 
-![Locust report (after-4)](./locust-load-tester/reports-after-4/screenshot.png)
+![Locust report (after-4)](screenshots/round-4-screenshot.png)
 
 **Bottleneck**
 
@@ -287,7 +287,7 @@ The **Shopping Cart** public ALB target went **Unhealthy** quickly (health check
 load). In next Round we **raised the Cart target group health check timeout (5s → 15s)** and *
 *increased Cart task CPU and memory**.
 
-![Shopping Cart ALB target health (after-4)](./locust-load-tester/reports-after-4/shopping-cart-alb-timed-out.png)
+![Shopping Cart ALB target health (after-4)](screenshots/round-4-shopping-cart-alb-timed-out.png)
 
 #### Best Configuration
 
@@ -302,15 +302,15 @@ load). In next Round we **raised the Cart target group health check timeout (5s 
 | cca          | 256  | 512    | 1                          | 3                          |
 | warehouse    | 4096 | 8192   | 1                          | 1                          |
 
-![Locust report (after-5)](./locust-load-tester/reports-after-5/screenshot.png)
+![Locust report (after-5)](screenshots/round-5-screenshot.png)
 
 **CPU utilization (round-5)**
 
-![CPU utilization after Round 5](./locust-load-tester/reports-after-5/cpu.png)
+![CPU utilization after Round 5](screenshots/round-5-cpu.png)
 
 **Memory utilization (round-5)**
 
-![Memory utilization after Round 5](./locust-load-tester/reports-after-5/memory.png)
+![Memory utilization after Round 5](screenshots/round-5-memory.png)
 
 This Round confirmed the tuned configuration handles **1 500 users** with near-zero failures. The
 next step was to push beyond this to find the **overload point** (see Round 6 in the Evidence
@@ -331,22 +331,22 @@ Round Locust run.
 
 **Product**
 
-![product scale events](./locust-load-tester/reports-after-5/product-scale-events.png)
+![product scale events](screenshots/round-5-product-scale-events.png)
 
 **Shopping Cart**
 
-![shopping cart scale events](./locust-load-tester/reports-after-5/cart-scale-events.png)
+![shopping cart scale events](screenshots/round-5-cart-scale-events.png)
 
 **CCA**
 
-![cca scale events](./locust-load-tester/reports-after-5/cca-scale-events.png)
+![cca scale events](screenshots/round-5-cca-scale-events.png)
 
 **Desired task count**
 
 **Product**, **Shopping Cart**, and **CCA** in **Round 5** typically **scaled out in the same time
 window** (curves differ, but they move together under the same load step).
 
-![ECS desired task count — Product, Shopping Cart, CCA](./locust-load-tester/reports-after-5/number-of-desired-task.png)
+![ECS desired task count — Product, Shopping Cart, CCA](screenshots/round-5-number-of-desired-task.png)
 
 ### Overload condition
 
@@ -376,11 +376,11 @@ to push past the system's capacity.
 
 **Round 6 Locust report**
 
-![Locust report Round 6](./locust-load-tester/reports-after-6/screenshot.png)
+![Locust report Round 6](screenshots/round-6-screenshot.png)
 
 **Round 6 CPU utilization (all scalable services at or near max capacity)**
 
-![CPU utilization Round 6](./locust-load-tester/reports-after-6/cpu.png)
+![CPU utilization Round 6](screenshots/round-6-cpu.png)
 
 Under overload, the system shows a **cascading saturation** pattern:
 
