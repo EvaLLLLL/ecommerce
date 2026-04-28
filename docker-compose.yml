@@ -1,0 +1,287 @@
+volumes:
+  rabbitmq-data:
+
+networks:
+  ecommerce-net:
+    driver: bridge
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: [ "CMD", "rabbitmqctl", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  # ── KV Database — Products (Leader-Follower N=3, W=3, R=1) ─────────────────
+  # Read-heavy. W=3 (all nodes) ensures strong consistency on writes, R=1 for fast reads.
+
+  kv-products:
+    build:
+      context: .
+      dockerfile: kv-database/Dockerfile
+    platform: linux/amd64
+    container_name: kv-products
+    ports:
+      - "8084:8084"
+    environment:
+      KV_DATABASE_PORT: 8084
+      ROLE: leader
+      FOLLOWER_URLS: "http://kv-products-f1:8084,http://kv-products-f2:8084"
+      WRITE_QUORUM_SIZE: 3
+      READ_QUORUM_SIZE: 1
+    depends_on:
+      kv-products-f1:
+        condition: service_healthy
+      kv-products-f2:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8084/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  kv-products-f1: &kv-products-follower
+    build:
+      context: .
+      dockerfile: kv-database/Dockerfile
+    platform: linux/amd64
+    environment:
+      KV_DATABASE_PORT: 8084
+      ROLE: follower
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8084/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  kv-products-f2:
+    <<: *kv-products-follower
+
+  # ── KV Database — Carts (Leaderless N=3, W=2, R=2) ─────────────────────────
+  # Write-heavy during session. Leaderless with W+R>N for strong consistency.
+
+  kv-carts-node1: &kv-carts-node
+    build:
+      context: .
+      dockerfile: kv-database/Dockerfile
+    platform: linux/amd64
+    environment:
+      KV_DATABASE_PORT: 8085
+      ROLE: leaderless
+      PEER_URLS: "http://kv-carts-node2:8085,http://kv-carts-node3:8085"
+      NODE_SELF_URL: "http://kv-carts-node1:8085"
+      WRITE_QUORUM_SIZE: 2
+      READ_QUORUM_SIZE: 2
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8085/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  kv-carts-node2:
+    <<: *kv-carts-node
+    environment:
+      KV_DATABASE_PORT: 8085
+      ROLE: leaderless
+      PEER_URLS: "http://kv-carts-node1:8085,http://kv-carts-node3:8085"
+      NODE_SELF_URL: "http://kv-carts-node2:8085"
+      WRITE_QUORUM_SIZE: 2
+      READ_QUORUM_SIZE: 2
+
+  kv-carts-node3:
+    <<: *kv-carts-node
+    environment:
+      KV_DATABASE_PORT: 8085
+      ROLE: leaderless
+      PEER_URLS: "http://kv-carts-node1:8085,http://kv-carts-node2:8085"
+      NODE_SELF_URL: "http://kv-carts-node3:8085"
+      WRITE_QUORUM_SIZE: 2
+      READ_QUORUM_SIZE: 2
+
+  # Nginx round-robin proxy in front of the 3 leaderless nodes,
+  # so shopping-cart-service connects to a single URL: http://kv-carts:8085
+  kv-carts:
+    image: nginx:alpine
+    container_name: kv-carts
+    ports:
+      - "8085:8085"
+    depends_on:
+      kv-carts-node1:
+        condition: service_healthy
+      kv-carts-node2:
+        condition: service_healthy
+      kv-carts-node3:
+        condition: service_healthy
+    volumes:
+      - ./kv-carts-nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8085/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  # ── Core application services ───────────────────────────────────────────────
+
+  product-service:
+    build:
+      context: .
+      dockerfile: product-service/Dockerfile
+    platform: linux/amd64
+    container_name: product-service
+    ports:
+      - "8080:8080"
+    environment:
+      KV_DATABASE_URL: http://kv-products:8084
+      FAULT_RATE: 0.0   # set to 0.5 to simulate a "bad" instance for ATW demo
+    depends_on:
+      kv-products:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  credit-card-authorizer-service:
+    build:
+      context: .
+      dockerfile: credit-card-authorizer-service/Dockerfile
+    platform: linux/amd64
+    container_name: credit-card-authorizer-service
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: 8081
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8081/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  warehouse-service:
+    build:
+      context: .
+      dockerfile: warehouse-service/Dockerfile
+    platform: linux/amd64
+    container_name: warehouse-service
+    ports:
+      - "8083:8083"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+      WAREHOUSE_QUEUE_NAME: warehouse.ship.queue
+      WAREHOUSE_CONSUMER_COUNT: 16
+      WAREHOUSE_MAX_CONSUMER_COUNT: 64
+      WAREHOUSE_PREFETCH_COUNT: 10
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8083/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  shopping-cart-service:
+    build:
+      context: .
+      dockerfile: shopping-cart-service/Dockerfile
+    platform: linux/amd64
+    container_name: shopping-cart-service
+    ports:
+      - "8082:8082"
+    environment:
+      PRODUCT_SERVICE_URL: http://product-service:8080
+      WAREHOUSE_SERVICE_URL: http://warehouse-service:8083
+      CCA_SERVICE_URL: http://credit-card-authorizer-service:8081
+      KV_DATABASE_URL: http://kv-carts:8085
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+      WAREHOUSE_QUEUE_NAME: warehouse.ship.queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      kv-carts:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      credit-card-authorizer-service:
+        condition: service_healthy
+      warehouse-service:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:8082/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  # ── One-shot data loader ───────────────────────────────────────────────────
+  # Run with: docker compose --profile init up data-loader
+  # Waits for product-service to be healthy before loading products.
+
+  data-loader:
+    build:
+      context: .
+      dockerfile: data-loader/Dockerfile
+    platform: linux/amd64
+    container_name: data-loader
+    environment:
+      PRODUCT_SERVICE_URL: http://product-service:8080
+      PRODUCT_COUNT: 1000
+      THREAD_COUNT: 10
+    depends_on:
+      product-service:
+        condition: service_healthy
+    restart: "no"
+    profiles:
+      - init
+    networks:
+      - ecommerce-net
