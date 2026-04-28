@@ -1,6 +1,69 @@
 # E-commerce distributed microservices & database
 
-## Use Cases and Frequency Assumptions
+A distributed e-commerce backend built to explore distributed systems trade-offs: custom KV
+replication (leader-follower vs. leaderless), CAP theorem in practice, and autoscaling on AWS ECS.
+Built with Java/Spring Boot, RabbitMQ, and load-tested with Locust.
+
+**Services**
+
+| Service                | Role                                                                                         |
+|------------------------|----------------------------------------------------------------------------------------------|
+| Product Service        | Product catalog — serves `GET /products/{id}`                                                |
+| Shopping Cart Service  | Orchestrates AddItem and Checkout flows                                                      |
+| Credit Card Authorizer | Authorizes payments                                                                          |
+| Warehouse Service      | Manages inventory and fulfills orders via RabbitMQ                                           |
+| KV Database            | Custom in-memory KV store with leader-follower (products) and leaderless (carts) replication |
+
+**Running locally**
+
+```bash
+./scripts/run-local.sh
+```
+
+Starts all services via Docker Compose and loads 1,000 products.
+
+---
+
+## Use Cases
+
+### Customer Adds Item to Shopping Cart
+
+**Prerequisites**
+
+1. Customer is logged in, therefore their browser has their customer ID.
+
+**Steps**
+
+1. Customer selects a product
+2. Customer chooses quantity
+3. Customer clicks the "Add to Cart Button"
+4. System adds the item to the active Shopping cart
+
+**Errors and Exceptions**
+
+1. At step 4, if there is no active shopping cart then the System creates one and returns its ID to
+   the client.
+2. Standard bounds checking on quantity and product ID (ie, quantity in range 1..10_000 , valid
+   ProductID)
+
+### Customer Checks-Out Shopping Cart
+
+**Prerequisites**
+
+1. Customer is logged in, so their browser has their customer ID.
+
+**Steps**
+
+1. Customer adds Credit Card Information
+2. Customer clicks "Checkout"
+3. System sends the charge to the Credit Card Company for authorization
+4. System contacts Warehouse to tell it to prepare the shipment
+
+**Errors and Exceptions**
+
+1. Credit Card Company Declines the charge, return error to client and stop
+
+## Frequency Assumptions
 
 Session model:
 
@@ -48,61 +111,22 @@ CCA, Warehouse, RabbitMQ, and both KVs are **internal-only** (NLB). **Product**,
 
 ### Products KV — Leader-Follower, N=3, W=3, R=1
 
-**Read-write ratio (~149 : 1).** The Product Service is dominated by read operations. Each AddItem
-action requires browsing an average of 3.69 products (Log-Normal μ=1.3, σ=0.1) before selecting one.
-With an average of 3.03 AddItem actions per session (Log-Normal μ=1.1, σ=0.15), each session
-generates approximately 4.03 browse segments × 3.69 reads = ~14.87 product reads. Since product
-writes occur only during initial catalog loading (1,000 products at startup) and are otherwise
-negligible, the Product database experiences an estimated read-to-write ratio of approximately 149:
-
-1.
-
-**Why R=1.** Read requests return immediately from whichever node receives them — the Leader or any
-Follower — without contacting additional nodes. This minimizes read latency, which is critical given
-that product reads account for roughly 99% of all database operations in our workload.
-
-**Why W=3.** All three nodes must confirm before a write returns success. Since confirmations happen
-in parallel, write latency is bounded by the slowest responding node rather than the sum of all
-nodes. This is acceptable because product writes are extremely rare — occurring only during the
-initial load of 1,000 products and occasional catalog updates. The slower write path does not impact
-the system under normal operating conditions.
-
-**Evidence.** The W=3, R=1 configuration delivered the lowest and most consistent read
-latency across all configurations tested, with minimal long-tail behavior on the read path. This
-directly supports our decision for the Product Service, where fast and predictable reads are the
-primary requirement.
-
-**CAP trade-off (CP).** This configuration prioritizes Consistency and Partition Tolerance,
-sacrificing Availability. With W=3, every write must be confirmed by all three nodes — if any single
-node is unavailable, writes will be blocked. We accept this trade-off because product writes are so
-infrequent that write unavailability during a node failure has negligible operational impact.
-Meanwhile, R=1 may return a slightly stale value if a Follower has not yet received the latest write
-propagation, but given that product descriptions and prices change extremely rarely, a customer
-briefly seeing a slightly outdated value has minimal business impact.
+- **Read-write ratio ~149:1.** Each session generates ~15 product reads; writes occur only at
+  catalog load.
+- **R=1.** Serves reads from any node immediately — minimizes latency on the dominant operation.
+- **W=3.** All nodes confirm writes in parallel; acceptable because writes are rare.
+- **CAP: CP for writes, AP for reads.** W=3 means writes fail if any node is unavailable; reads
+  remain available from any surviving node. Write unavailability has negligible impact given how
+  infrequently writes occur.
 
 ### Carts KV — Leaderless, N=3, W=2, R=2
 
-**Read-write ratio (~50 : 50).** The Shopping Cart database has a more balanced read-write ratio.
-Each Add-to-cart session contributes one read and one write. Each Checkout session contributes one
-read and one write. Gives a read-to-write ratio of approximately 50:50.
-
-**Why W=2, R=2.** Shopping cart data is highly sensitive, losing a customer's cart contents or
-double-charging a credit card are serious business errors. Therefore, strong write consistency is
-essential. R + W = 4 > N = 3 guarantees that every read will overlap with the most recent write by
-at least one node, ensuring strong consistency without requiring all nodes to participate in every
-operation.
-
-**Evidence.** Compared to W=5, R=1 in previous testing, W=2, R=2 reduces write latency from
-approximately 1,000ms to approximately 400ms, while maintaining the same consistency guarantee. W=2,
-R=2 provide a more balanced latency distribution between reads and writes.
-
-**Why Leaderless.** Shopping cart writes are frequent and time sensitive. With Leaderless, any node
-can coordinate a write, distributing the write load evenly across all nodes.
-
-**CAP trade-off (CP).** We deprioritize Availability. Requiring W=2 means that if two or more nodes
-are simultaneously unavailable, write operations will fail. It is better to return an error to the
-customer than to silently lose cart items or commit an incomplete order. Consistency and Partition
-Tolerance are prioritized over Availability.
+- **Read-write ratio ~50:50.** Every AddItem and Checkout contributes one read and one write.
+- **W=2, R=2.** R+W=4 > N=3 guarantees every read overlaps with the latest write — strong
+  consistency without requiring all nodes. Compared to W=3,R=1, this cuts write latency ~1,000ms → ~
+  400ms.
+- **Leaderless.** Any node can coordinate a write, distributing load evenly across nodes.
+- **CAP: CP.** Returning an error is preferable to silently losing cart data or double-charging.
 
 ---
 
